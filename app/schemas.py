@@ -57,3 +57,50 @@ class ArticleSortie(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Devis ------------------------------------------------------------
+
+class LigneDevisEntree(BaseModel):
+    article_id: int | None = None
+    designation: str
+    quantite: int = 1
+    prix_unitaire: Decimal = Decimal("0")
+
+
+class LigneDevisSortie(BaseModel):
+    id: int
+    article_id: int | None = None
+    designation: str
+    quantite: int
+    prix_unitaire: Decimal
+
+    class Config:
+        from_attributes = True
+
+
+class DevisEntree(BaseModel):
+    client_nom: str
+    statut: str = "brouillon"
+    notes: str | None = None
+    lignes: list[LigneDevisEntree] = []
+
+
+class DevisMiseAJour(BaseModel):
+    client_nom: str | None = None
+    statut: str | None = None
+    notes: str | None = None
+    lignes: list[LigneDevisEntree] | None = None
+
+
+class DevisSortie(BaseModel):
+    id: int
+    client_nom: str
+    statut: str
+    notes: str | None = None
+    lignes: list[LigneDevisSortie]
+    cree_le: datetime
+    modifie_le: datetime
+
+    class Config:
+        from_attributes = True
