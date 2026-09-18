@@ -2,10 +2,10 @@ import os
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.database import engine, get_db, Base
-from app.models import Utilisateur, Article
+from app.models import Utilisateur, Article, Devis, LigneDevis
 from app.schemas import (
     InscriptionEntree,
     ConnexionEntree,
@@ -14,6 +14,9 @@ from app.schemas import (
     ArticleEntree,
     ArticleMiseAJour,
     ArticleSortie,
+    DevisEntree,
+    DevisMiseAJour,
+    DevisSortie,
 )
 from app.auth import (
     hacher_mot_de_passe,
@@ -28,7 +31,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Prog 1.8 API",
     description="API multi-entreprise pour catalogue, devis et stock (quincaillerie/vitrerie).",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 # --- CORS ---------------------------------------------------------------
@@ -89,7 +92,6 @@ def moi(utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant))
 
 
 # --- Articles ---------------------------------------------------------------
-# Chaque utilisateur (entreprise) ne voit et ne modifie que ses propres articles.
 
 @app.get("/articles", response_model=list[ArticleSortie])
 def lister_articles(
@@ -160,5 +162,99 @@ def supprimer_article(
 ):
     article = _obtenir_article_ou_404(article_id, db, utilisateur_courant)
     db.delete(article)
+    db.commit()
+    return None
+
+
+# --- Devis --------------------------------------------------------------
+
+def _requete_devis(db: Session, utilisateur_courant: Utilisateur):
+    return (
+        db.query(Devis)
+        .options(joinedload(Devis.lignes))
+        .filter(Devis.utilisateur_id == utilisateur_courant.id)
+    )
+
+
+@app.get("/devis", response_model=list[DevisSortie])
+def lister_devis(
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    return _requete_devis(db, utilisateur_courant).order_by(Devis.cree_le.desc()).all()
+
+
+@app.post("/devis", response_model=DevisSortie, status_code=status.HTTP_201_CREATED)
+def creer_devis(
+    donnees: DevisEntree,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    devis = Devis(
+        utilisateur_id=utilisateur_courant.id,
+        client_nom=donnees.client_nom,
+        statut=donnees.statut,
+        notes=donnees.notes,
+    )
+    for ligne in donnees.lignes:
+        devis.lignes.append(LigneDevis(**ligne.model_dump()))
+
+    db.add(devis)
+    db.commit()
+    db.refresh(devis)
+    return devis
+
+
+def _obtenir_devis_ou_404(devis_id: int, db: Session, utilisateur_courant: Utilisateur) -> Devis:
+    devis = (
+        _requete_devis(db, utilisateur_courant)
+        .filter(Devis.id == devis_id)
+        .first()
+    )
+    if not devis:
+        raise HTTPException(status_code=404, detail="Devis introuvable")
+    return devis
+
+
+@app.get("/devis/{devis_id}", response_model=DevisSortie)
+def obtenir_devis(
+    devis_id: int,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    return _obtenir_devis_ou_404(devis_id, db, utilisateur_courant)
+
+
+@app.put("/devis/{devis_id}", response_model=DevisSortie)
+def modifier_devis(
+    devis_id: int,
+    donnees: DevisMiseAJour,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    devis = _obtenir_devis_ou_404(devis_id, db, utilisateur_courant)
+
+    champs = donnees.model_dump(exclude_unset=True, exclude={"lignes"})
+    for champ, valeur in champs.items():
+        setattr(devis, champ, valeur)
+
+    if donnees.lignes is not None:
+        devis.lignes.clear()
+        for ligne in donnees.lignes:
+            devis.lignes.append(LigneDevis(**ligne.model_dump()))
+
+    db.commit()
+    db.refresh(devis)
+    return devis
+
+
+@app.delete("/devis/{devis_id}", status_code=status.HTTP_204_NO_CONTENT)
+def supprimer_devis(
+    devis_id: int,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    devis = _obtenir_devis_ou_404(devis_id, db, utilisateur_courant)
+    db.delete(devis)
     db.commit()
     return None
