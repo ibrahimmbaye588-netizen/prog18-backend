@@ -15,6 +15,7 @@ class Utilisateur(Base):
     cree_le = Column(DateTime(timezone=True), server_default=func.now())
 
     articles = relationship("Article", back_populates="proprietaire", cascade="all, delete-orphan")
+    devis = relationship("Devis", back_populates="proprietaire", cascade="all, delete-orphan")
 
 
 class Article(Base):
@@ -31,3 +32,33 @@ class Article(Base):
     modifie_le = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     proprietaire = relationship("Utilisateur", back_populates="articles")
+
+
+class Devis(Base):
+    __tablename__ = "devis"
+
+    id = Column(Integer, primary_key=True, index=True)
+    utilisateur_id = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False, index=True)
+    client_nom = Column(String, nullable=False)
+    statut = Column(String, nullable=False, default="brouillon")  # brouillon | envoye | accepte | refuse
+    notes = Column(Text, nullable=True)
+    cree_le = Column(DateTime(timezone=True), server_default=func.now())
+    modifie_le = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    proprietaire = relationship("Utilisateur", back_populates="devis")
+    lignes = relationship(
+        "LigneDevis", back_populates="devis", cascade="all, delete-orphan", order_by="LigneDevis.id"
+    )
+
+
+class LigneDevis(Base):
+    __tablename__ = "lignes_devis"
+
+    id = Column(Integer, primary_key=True, index=True)
+    devis_id = Column(Integer, ForeignKey("devis.id"), nullable=False, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id"), nullable=True)
+    designation = Column(String, nullable=False)
+    quantite = Column(Integer, nullable=False, default=1)
+    prix_unitaire = Column(Numeric(10, 2), nullable=False, default=0)
+
+    devis = relationship("Devis", back_populates="lignes")
