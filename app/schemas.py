@@ -24,39 +24,58 @@ class UtilisateurSortie(BaseModel):
         from_attributes = True
 
 
+class UtilisateurMiseAJour(BaseModel):
+    nom_entreprise: str | None = None
+
+
 class TokenSortie(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
 
 class ArticleEntree(BaseModel):
+    reference: str | None = None
     nom: str
     description: str | None = None
+    prix_achat: Decimal = Decimal("0")
     prix: Decimal = Decimal("0")
     quantite_stock: int = 0
+    seuil_alerte: int = 5
     photo_url: str | None = None
 
 
 class ArticleMiseAJour(BaseModel):
+    reference: str | None = None
     nom: str | None = None
     description: str | None = None
+    prix_achat: Decimal | None = None
     prix: Decimal | None = None
     quantite_stock: int | None = None
+    seuil_alerte: int | None = None
     photo_url: str | None = None
 
 
 class ArticleSortie(BaseModel):
     id: int
+    reference: str | None = None
     nom: str
     description: str | None = None
+    prix_achat: Decimal
     prix: Decimal
     quantite_stock: int
+    seuil_alerte: int
     photo_url: str | None = None
     cree_le: datetime
     modifie_le: datetime
 
     class Config:
         from_attributes = True
+
+
+class PhotoResultat(BaseModel):
+    url: str
+    miniature: str
+    photographe: str | None = None
 
 
 # --- Devis ------------------------------------------------------------
@@ -98,6 +117,7 @@ class DevisSortie(BaseModel):
     client_nom: str
     statut: str
     notes: str | None = None
+    stock_deduit: bool
     lignes: list[LigneDevisSortie]
     cree_le: datetime
     modifie_le: datetime
@@ -140,3 +160,122 @@ class MouvementStockSortie(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Clients ------------------------------------------------------------
+
+class ClientEntree(BaseModel):
+    nom: str
+    telephone: str | None = None
+    adresse: str | None = None
+    notes: str | None = None
+
+
+class ClientMiseAJour(BaseModel):
+    nom: str | None = None
+    telephone: str | None = None
+    adresse: str | None = None
+    notes: str | None = None
+
+
+class ClientSortie(BaseModel):
+    id: int
+    nom: str
+    telephone: str | None = None
+    adresse: str | None = None
+    notes: str | None = None
+    solde_du: Decimal = Decimal("0")
+    cree_le: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PaiementEntree(BaseModel):
+    montant: Decimal
+    motif: str | None = None
+
+    @field_validator("montant")
+    @classmethod
+    def valider_montant(cls, valeur: Decimal) -> Decimal:
+        if valeur <= 0:
+            raise ValueError("montant doit être positif")
+        return valeur
+
+
+class PaiementSortie(BaseModel):
+    id: int
+    client_id: int
+    montant: Decimal
+    motif: str | None = None
+    cree_le: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Ventes (caisse) ------------------------------------------------------
+
+class LigneVenteEntree(BaseModel):
+    article_id: int | None = None
+    designation: str
+    quantite: int = 1
+    prix_unitaire: Decimal = Decimal("0")
+
+
+class LigneVenteSortie(BaseModel):
+    id: int
+    article_id: int | None = None
+    designation: str
+    quantite: int
+    prix_unitaire: Decimal
+    prix_achat_unitaire: Decimal
+
+    class Config:
+        from_attributes = True
+
+
+class VenteEntree(BaseModel):
+    client_id: int | None = None
+    client_nom_libre: str | None = None
+    mode_paiement: str = "comptant"  # comptant | credit
+    montant_paye: Decimal = Decimal("0")
+    lignes: list[LigneVenteEntree]
+
+    @field_validator("mode_paiement")
+    @classmethod
+    def valider_mode(cls, valeur: str) -> str:
+        if valeur not in ("comptant", "credit"):
+            raise ValueError("mode_paiement doit être 'comptant' ou 'credit'")
+        return valeur
+
+
+class VenteSortie(BaseModel):
+    id: int
+    client_id: int | None = None
+    client_nom_libre: str | None = None
+    mode_paiement: str
+    montant_paye: Decimal
+    lignes: list[LigneVenteSortie]
+    cree_le: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Tableau de bord ------------------------------------------------------
+
+class ArticleAlerte(BaseModel):
+    id: int
+    nom: str
+    quantite_stock: int
+    seuil_alerte: int
+
+
+class TableauDeBordResume(BaseModel):
+    chiffre_affaires_jour: Decimal
+    ventes_jour: int
+    benefice_estime_jour: Decimal
+    nombre_produits: int
+    nombre_clients: int
+    produits_presque_epuises: list[ArticleAlerte]
