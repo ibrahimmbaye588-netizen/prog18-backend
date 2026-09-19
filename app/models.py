@@ -16,6 +16,9 @@ class Utilisateur(Base):
 
     articles = relationship("Article", back_populates="proprietaire", cascade="all, delete-orphan")
     devis = relationship("Devis", back_populates="proprietaire", cascade="all, delete-orphan")
+    mouvements_stock = relationship(
+        "MouvementStock", back_populates="proprietaire", cascade="all, delete-orphan"
+    )
 
 
 class Article(Base):
@@ -32,6 +35,9 @@ class Article(Base):
     modifie_le = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     proprietaire = relationship("Utilisateur", back_populates="articles")
+    mouvements_stock = relationship(
+        "MouvementStock", back_populates="article", cascade="all, delete-orphan"
+    )
 
 
 class Devis(Base):
@@ -40,7 +46,7 @@ class Devis(Base):
     id = Column(Integer, primary_key=True, index=True)
     utilisateur_id = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False, index=True)
     client_nom = Column(String, nullable=False)
-    statut = Column(String, nullable=False, default="brouillon")  # brouillon | envoye | accepte | refuse
+    statut = Column(String, nullable=False, default="brouillon")
     notes = Column(Text, nullable=True)
     cree_le = Column(DateTime(timezone=True), server_default=func.now())
     modifie_le = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -62,3 +68,18 @@ class LigneDevis(Base):
     prix_unitaire = Column(Numeric(10, 2), nullable=False, default=0)
 
     devis = relationship("Devis", back_populates="lignes")
+
+
+class MouvementStock(Base):
+    __tablename__ = "mouvements_stock"
+
+    id = Column(Integer, primary_key=True, index=True)
+    utilisateur_id = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id"), nullable=False, index=True)
+    type = Column(String, nullable=False)  # entree | sortie
+    quantite = Column(Integer, nullable=False)
+    motif = Column(String, nullable=True)
+    cree_le = Column(DateTime(timezone=True), server_default=func.now())
+
+    proprietaire = relationship("Utilisateur", back_populates="mouvements_stock")
+    article = relationship("Article", back_populates="mouvements_stock")
