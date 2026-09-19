@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import engine, get_db, Base
-from app.models import Utilisateur, Article, Devis, LigneDevis
+from app.models import Utilisateur, Article, Devis, LigneDevis, MouvementStock
 from app.schemas import (
     InscriptionEntree,
     ConnexionEntree,
@@ -17,6 +17,8 @@ from app.schemas import (
     DevisEntree,
     DevisMiseAJour,
     DevisSortie,
+    MouvementStockEntree,
+    MouvementStockSortie,
 )
 from app.auth import (
     hacher_mot_de_passe,
@@ -31,7 +33,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Prog 1.8 API",
     description="API multi-entreprise pour catalogue, devis et stock (quincaillerie/vitrerie).",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 # --- CORS ---------------------------------------------------------------
@@ -206,11 +208,7 @@ def creer_devis(
 
 
 def _obtenir_devis_ou_404(devis_id: int, db: Session, utilisateur_courant: Utilisateur) -> Devis:
-    devis = (
-        _requete_devis(db, utilisateur_courant)
-        .filter(Devis.id == devis_id)
-        .first()
-    )
+    devis = _requete_devis(db, utilisateur_courant).filter(Devis.id == devis_id).first()
     if not devis:
         raise HTTPException(status_code=404, detail="Devis introuvable")
     return devis
@@ -258,3 +256,66 @@ def supprimer_devis(
     db.delete(devis)
     db.commit()
     return None
+
+
+# --- Stock ----------------------------------------------------------------
+
+def _mouvement_vers_sortie(mouvement: MouvementStock) -> MouvementStockSortie:
+    return MouvementStockSortie(
+        id=mouvement.id,
+        article_id=mouvement.article_id,
+        article_nom=mouvement.article.nom if mouvement.article else None,
+        type=mouvement.type,
+        quantite=mouvement.quantite,
+        motif=mouvement.motif,
+        cree_le=mouvement.cree_le,
+    )
+
+
+@app.get("/stock/mouvements", response_model=list[MouvementStockSortie])
+def lister_mouvements(
+    article_id: int | None = None,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    requete = (
+        db.query(MouvementStock)
+        .options(joinedload(MouvementStock.article))
+        .filter(MouvementStock.utilisateur_id == utilisateur_courant.id)
+    )
+    if article_id is not None:
+        requete = requete.filter(MouvementStock.article_id == article_id)
+
+    mouvements = requete.order_by(MouvementStock.cree_le.desc()).limit(200).all()
+    return [_mouvement_vers_sortie(m) for m in mouvements]
+
+
+@app.post("/stock/mouvements", response_model=MouvementStockSortie, status_code=status.HTTP_201_CREATED)
+def creer_mouvement(
+    donnees: MouvementStockEntree,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    article = _obtenir_article_ou_404(donnees.article_id, db, utilisateur_courant)
+
+    if donnees.type == "sortie" and article.quantite_stock < donnees.quantite:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stock insuffisant : {article.quantite_stock} unité(s) disponible(s)",
+        )
+
+    delta = donnees.quantite if donnees.type == "entree" else -donnees.quantite
+    article.quantite_stock += delta
+
+    mouvement = MouvementStock(
+        utilisateur_id=utilisateur_courant.id,
+        article_id=article.id,
+        type=donnees.type,
+        quantite=donnees.quantite,
+        motif=donnees.motif,
+    )
+    db.add(mouvement)
+    db.commit()
+    db.refresh(mouvement)
+    mouvement.article = article
+    return _mouvement_vers_sortie(mouvement)
