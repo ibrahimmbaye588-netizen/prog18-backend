@@ -117,6 +117,7 @@ class Paiement(Base):
     utilisateur_id = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False, index=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
     montant = Column(Numeric(10, 2), nullable=False)
+    moyen_paiement = Column(String, nullable=False, default="especes", server_default="especes")
     motif = Column(String, nullable=True)
     cree_le = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -136,6 +137,8 @@ class Vente(Base):
     client_nom_libre = Column(String, nullable=True)  # si vente sans client enregistré
     mode_paiement = Column(String, nullable=False, default="comptant")  # comptant | credit
     montant_paye = Column(Numeric(10, 2), nullable=False, default=0)
+    # especes | mobile_money | carte | virement | cheque (voir schemas.MOYENS_PAIEMENT)
+    moyen_paiement = Column(String, nullable=False, default="especes", server_default="especes")
     cree_le = Column(DateTime(timezone=True), server_default=func.now())
 
     proprietaire = relationship("Utilisateur", back_populates="ventes")
