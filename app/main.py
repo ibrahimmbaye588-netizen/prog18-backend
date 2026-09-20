@@ -1,5 +1,6 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import requests
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -273,12 +274,15 @@ def creer_devis(
         devis.lignes.append(LigneDevis(**ligne.model_dump()))
 
     db.add(devis)
-    db.commit()
+    try:
+        db.flush()
+        if devis.statut == "accepte":
+            _appliquer_deduction_stock(devis, db, utilisateur_courant)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(devis)
-
-    if devis.statut == "accepte":
-        _appliquer_deduction_stock(devis, db, utilisateur_courant)
-
     return devis
 
 
@@ -290,31 +294,47 @@ def _obtenir_devis_ou_404(devis_id: int, db: Session, utilisateur_courant: Utili
 
 
 def _appliquer_deduction_stock(devis: Devis, db: Session, utilisateur_courant: Utilisateur):
+    """Déduit le stock d'un devis accepté.
+
+    Ne fait PAS de commit : c'est l'appelant qui valide la transaction, pour que
+    le changement de statut et la déduction réussissent ou échouent ensemble.
+    Lève une 400 si le stock est insuffisant.
+    """
     if devis.stock_deduit:
         return
+
+    besoins: dict[int, int] = {}
     for ligne in devis.lignes:
-        if not ligne.article_id:
-            continue
+        if ligne.article_id:
+            besoins[ligne.article_id] = besoins.get(ligne.article_id, 0) + ligne.quantite
+
+    # Ordre stable + verrou de ligne : évite les courses et les deadlocks
+    for article_id in sorted(besoins):
         article = (
             db.query(Article)
-            .filter(Article.id == ligne.article_id, Article.utilisateur_id == utilisateur_courant.id)
+            .filter(Article.id == article_id, Article.utilisateur_id == utilisateur_courant.id)
+            .with_for_update()
             .first()
         )
         if not article:
             continue
-        article.quantite_stock -= ligne.quantite
+        quantite = besoins[article_id]
+        if article.quantite_stock < quantite:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Stock insuffisant pour '{article.nom}' : {article.quantite_stock} disponible(s), {quantite} demandé(s)",
+            )
+        article.quantite_stock -= quantite
         db.add(
             MouvementStock(
                 utilisateur_id=utilisateur_courant.id,
                 article_id=article.id,
                 type="sortie",
-                quantite=ligne.quantite,
+                quantite=quantite,
                 motif=f"Devis accepté — {devis.client_nom}",
             )
         )
     devis.stock_deduit = True
-    db.commit()
-    db.refresh(devis)
 
 
 @app.get("/devis/{devis_id}", response_model=DevisSortie)
@@ -344,12 +364,14 @@ def modifier_devis(
         for ligne in donnees.lignes:
             devis.lignes.append(LigneDevis(**ligne.model_dump()))
 
-    db.commit()
+    try:
+        if devis.statut == "accepte":
+            _appliquer_deduction_stock(devis, db, utilisateur_courant)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(devis)
-
-    if devis.statut == "accepte":
-        _appliquer_deduction_stock(devis, db, utilisateur_courant)
-
     return devis
 
 
@@ -536,6 +558,7 @@ def enregistrer_paiement(
         utilisateur_id=utilisateur_courant.id,
         client_id=client.id,
         montant=donnees.montant,
+        moyen_paiement=donnees.moyen_paiement,
         motif=donnees.motif,
     )
     db.add(paiement)
@@ -570,64 +593,88 @@ def creer_vente(
 ):
     if not donnees.lignes:
         raise HTTPException(status_code=400, detail="La vente doit contenir au moins une ligne")
+    if any(l.quantite <= 0 for l in donnees.lignes):
+        raise HTTPException(status_code=400, detail="Chaque quantité doit être positive")
 
     if donnees.client_id:
         _obtenir_client_ou_404(donnees.client_id, db, utilisateur_courant)
+    if donnees.mode_paiement == "credit" and not donnees.client_id:
+        raise HTTPException(status_code=400, detail="Une vente à crédit nécessite un client enregistré")
 
-    total = sum(float(l.quantite) * float(l.prix_unitaire) for l in donnees.lignes)
-    montant_paye = float(donnees.montant_paye)
+    total = sum((Decimal(l.quantite) * l.prix_unitaire for l in donnees.lignes), Decimal("0"))
+    montant_paye = donnees.montant_paye
     if donnees.mode_paiement == "comptant" and montant_paye == 0:
         montant_paye = total
+    if montant_paye < 0 or montant_paye > total:
+        raise HTTPException(
+            status_code=400, detail="Le montant payé doit être compris entre 0 et le total de la vente"
+        )
 
-    vente = Vente(
-        utilisateur_id=utilisateur_courant.id,
-        client_id=donnees.client_id,
-        client_nom_libre=donnees.client_nom_libre,
-        mode_paiement=donnees.mode_paiement,
-        montant_paye=montant_paye,
-    )
-
-    articles_a_deduire = []
+    # Stock : besoins cumulés par article (un même article peut apparaître sur plusieurs lignes)
+    besoins: dict[int, int] = {}
     for ligne in donnees.lignes:
-        prix_achat_unitaire = 0
         if ligne.article_id:
-            article = _obtenir_article_ou_404(ligne.article_id, db, utilisateur_courant)
-            if article.quantite_stock < ligne.quantite:
+            besoins[ligne.article_id] = besoins.get(ligne.article_id, 0) + ligne.quantite
+
+    articles: dict[int, Article] = {}
+    try:
+        for article_id in sorted(besoins):
+            article = (
+                db.query(Article)
+                .filter(Article.id == article_id, Article.utilisateur_id == utilisateur_courant.id)
+                .with_for_update()
+                .first()
+            )
+            if not article:
+                raise HTTPException(status_code=404, detail="Article introuvable")
+            if article.quantite_stock < besoins[article_id]:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Stock insuffisant pour '{article.nom}' : {article.quantite_stock} disponible(s)",
                 )
-            prix_achat_unitaire = float(article.prix_achat)
-            articles_a_deduire.append((article, ligne.quantite))
+            articles[article_id] = article
 
-        vente.lignes.append(
-            LigneVente(
-                article_id=ligne.article_id,
-                designation=ligne.designation,
-                quantite=ligne.quantite,
-                prix_unitaire=ligne.prix_unitaire,
-                prix_achat_unitaire=prix_achat_unitaire,
-            )
+        vente = Vente(
+            utilisateur_id=utilisateur_courant.id,
+            client_id=donnees.client_id,
+            client_nom_libre=donnees.client_nom_libre,
+            mode_paiement=donnees.mode_paiement,
+            moyen_paiement=donnees.moyen_paiement,
+            montant_paye=montant_paye,
         )
-
-    db.add(vente)
-    db.commit()
-    db.refresh(vente)
-
-    for article, quantite in articles_a_deduire:
-        article.quantite_stock -= quantite
-        db.add(
-            MouvementStock(
-                utilisateur_id=utilisateur_courant.id,
-                article_id=article.id,
-                type="sortie",
-                quantite=quantite,
-                motif=f"Vente #{vente.id}",
+        for ligne in donnees.lignes:
+            article = articles.get(ligne.article_id) if ligne.article_id else None
+            vente.lignes.append(
+                LigneVente(
+                    article_id=ligne.article_id,
+                    designation=ligne.designation,
+                    quantite=ligne.quantite,
+                    prix_unitaire=ligne.prix_unitaire,
+                    prix_achat_unitaire=article.prix_achat if article else 0,
+                )
             )
-        )
-    db.commit()
-    db.refresh(vente)
+        db.add(vente)
+        db.flush()  # obtient vente.id pour le motif des mouvements
 
+        for article_id in sorted(besoins):
+            article = articles[article_id]
+            article.quantite_stock -= besoins[article_id]
+            db.add(
+                MouvementStock(
+                    utilisateur_id=utilisateur_courant.id,
+                    article_id=article.id,
+                    type="sortie",
+                    quantite=besoins[article_id],
+                    motif=f"Vente #{vente.id}",
+                )
+            )
+
+        db.commit()  # vente + lignes + stock + mouvements : tout ou rien
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(vente)
     return vente
 
 
@@ -650,15 +697,19 @@ def resume_tableau_de_bord(
     db: Session = Depends(get_db),
     utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
 ):
-    aujourdhui = datetime.now(timezone.utc).date()
+    debut_jour = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    fin_jour = debut_jour + timedelta(days=1)
 
-    ventes = (
+    ventes_du_jour = (
         db.query(Vente)
         .options(joinedload(Vente.lignes))
-        .filter(Vente.utilisateur_id == utilisateur_courant.id)
+        .filter(
+            Vente.utilisateur_id == utilisateur_courant.id,
+            Vente.cree_le >= debut_jour,
+            Vente.cree_le < fin_jour,
+        )
         .all()
     )
-    ventes_du_jour = [v for v in ventes if v.cree_le.date() == aujourdhui]
 
     chiffre_affaires_jour = sum(
         sum(float(l.quantite) * float(l.prix_unitaire) for l in v.lignes) for v in ventes_du_jour
