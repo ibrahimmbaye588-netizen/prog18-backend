@@ -2,6 +2,15 @@ from pydantic import BaseModel, EmailStr, field_validator
 from datetime import datetime
 from decimal import Decimal
 
+# Moyens de paiement acceptés (distinct de mode_paiement : comptant | credit)
+MOYENS_PAIEMENT = ("especes", "mobile_money", "carte", "virement", "cheque")
+
+
+def _valider_moyen_paiement(valeur: str) -> str:
+    if valeur not in MOYENS_PAIEMENT:
+        raise ValueError(f"moyen_paiement doit être l'un de : {', '.join(MOYENS_PAIEMENT)}")
+    return valeur
+
 
 class InscriptionEntree(BaseModel):
     email: EmailStr
@@ -193,7 +202,13 @@ class ClientSortie(BaseModel):
 
 class PaiementEntree(BaseModel):
     montant: Decimal
+    moyen_paiement: str = "especes"
     motif: str | None = None
+
+    @field_validator("moyen_paiement")
+    @classmethod
+    def valider_moyen(cls, valeur: str) -> str:
+        return _valider_moyen_paiement(valeur)
 
     @field_validator("montant")
     @classmethod
@@ -207,6 +222,7 @@ class PaiementSortie(BaseModel):
     id: int
     client_id: int
     montant: Decimal
+    moyen_paiement: str
     motif: str | None = None
     cree_le: datetime
 
@@ -240,7 +256,13 @@ class VenteEntree(BaseModel):
     client_nom_libre: str | None = None
     mode_paiement: str = "comptant"  # comptant | credit
     montant_paye: Decimal = Decimal("0")
+    moyen_paiement: str = "especes"
     lignes: list[LigneVenteEntree]
+
+    @field_validator("moyen_paiement")
+    @classmethod
+    def valider_moyen(cls, valeur: str) -> str:
+        return _valider_moyen_paiement(valeur)
 
     @field_validator("mode_paiement")
     @classmethod
@@ -256,6 +278,7 @@ class VenteSortie(BaseModel):
     client_nom_libre: str | None = None
     mode_paiement: str
     montant_paye: Decimal
+    moyen_paiement: str
     lignes: list[LigneVenteSortie]
     cree_le: datetime
 
