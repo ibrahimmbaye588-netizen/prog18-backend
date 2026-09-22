@@ -160,3 +160,64 @@ class LigneVente(Base):
     prix_achat_unitaire = Column(Numeric(10, 2), nullable=False, default=0)  # copié au moment de la vente
 
     vente = relationship("Vente", back_populates="lignes")
+
+
+class Facture(Base):
+    """Facture numérotée émise à un client. Ne modifie jamais le stock :
+    elle documente une vente déjà réalisée (via Vente) ou un devis déjà
+    accepté (via Devis), ou peut être saisie librement."""
+
+    __tablename__ = "factures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    utilisateur_id = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False, index=True)
+    numero = Column(String, nullable=False, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
+    client_nom_libre = Column(String, nullable=True)
+    devis_id = Column(Integer, ForeignKey("devis.id"), nullable=True)
+    vente_id = Column(Integer, ForeignKey("ventes.id"), nullable=True)
+    statut = Column(String, nullable=False, default="brouillon")  # brouillon | emise | annulee
+    notes = Column(Text, nullable=True)
+    cree_le = Column(DateTime(timezone=True), server_default=func.now())
+    modifie_le = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    utilisateur = relationship("Utilisateur")
+    client = relationship("Client")
+    devis = relationship("Devis")
+    vente = relationship("Vente")
+    lignes = relationship(
+        "LigneFacture", back_populates="facture", cascade="all, delete-orphan", order_by="LigneFacture.id"
+    )
+    paiements = relationship(
+        "PaiementFacture", back_populates="facture", cascade="all, delete-orphan", order_by="PaiementFacture.id"
+    )
+
+
+class LigneFacture(Base):
+    __tablename__ = "lignes_facture"
+
+    id = Column(Integer, primary_key=True, index=True)
+    facture_id = Column(Integer, ForeignKey("factures.id"), nullable=False, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id"), nullable=True)
+    designation = Column(String, nullable=False)
+    quantite = Column(Integer, nullable=False, default=1)
+    prix_unitaire = Column(Numeric(10, 2), nullable=False, default=0)
+
+    facture = relationship("Facture", back_populates="lignes")
+
+
+class PaiementFacture(Base):
+    """Paiement reçu en règlement d'une facture précise (distinct de Paiement,
+    qui règle le solde dû global d'un client sans être rattaché à une facture)."""
+
+    __tablename__ = "paiements_facture"
+
+    id = Column(Integer, primary_key=True, index=True)
+    utilisateur_id = Column(Integer, ForeignKey("utilisateurs.id"), nullable=False, index=True)
+    facture_id = Column(Integer, ForeignKey("factures.id"), nullable=False, index=True)
+    montant = Column(Numeric(10, 2), nullable=False)
+    moyen_paiement = Column(String, nullable=False, default="especes", server_default="especes")
+    motif = Column(String, nullable=True)
+    cree_le = Column(DateTime(timezone=True), server_default=func.now())
+
+    facture = relationship("Facture", back_populates="paiements")
