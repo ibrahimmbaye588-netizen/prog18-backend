@@ -302,3 +302,109 @@ class TableauDeBordResume(BaseModel):
     nombre_produits: int
     nombre_clients: int
     produits_presque_epuises: list[ArticleAlerte]
+
+
+# --- Factures --------------------------------------------------------------
+
+STATUTS_FACTURE = ("brouillon", "emise", "annulee")
+
+
+class LigneFactureEntree(BaseModel):
+    article_id: int | None = None
+    designation: str
+    quantite: int = 1
+    prix_unitaire: Decimal = Decimal("0")
+
+
+class LigneFactureSortie(BaseModel):
+    id: int
+    article_id: int | None = None
+    designation: str
+    quantite: int
+    prix_unitaire: Decimal
+
+    class Config:
+        from_attributes = True
+
+
+class FacturePaiementEntree(BaseModel):
+    montant: Decimal
+    moyen_paiement: str = "especes"
+    motif: str | None = None
+
+    @field_validator("moyen_paiement")
+    @classmethod
+    def valider_moyen(cls, valeur: str) -> str:
+        return _valider_moyen_paiement(valeur)
+
+    @field_validator("montant")
+    @classmethod
+    def valider_montant(cls, valeur: Decimal) -> Decimal:
+        if valeur <= 0:
+            raise ValueError("montant doit être positif")
+        return valeur
+
+
+class FacturePaiementSortie(BaseModel):
+    id: int
+    montant: Decimal
+    moyen_paiement: str
+    motif: str | None = None
+    cree_le: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FactureEntree(BaseModel):
+    client_id: int | None = None
+    client_nom_libre: str | None = None
+    devis_id: int | None = None
+    vente_id: int | None = None
+    statut: str = "brouillon"
+    notes: str | None = None
+    # Si vide et devis_id ou vente_id est fourni, les lignes sont copiées automatiquement.
+    lignes: list[LigneFactureEntree] = []
+
+    @field_validator("statut")
+    @classmethod
+    def valider_statut(cls, valeur: str) -> str:
+        if valeur not in STATUTS_FACTURE:
+            raise ValueError(f"statut doit être l'un de : {', '.join(STATUTS_FACTURE)}")
+        return valeur
+
+
+class FactureMiseAJour(BaseModel):
+    client_id: int | None = None
+    client_nom_libre: str | None = None
+    statut: str | None = None
+    notes: str | None = None
+    lignes: list[LigneFactureEntree] | None = None
+
+    @field_validator("statut")
+    @classmethod
+    def valider_statut(cls, valeur: str | None) -> str | None:
+        if valeur is not None and valeur not in STATUTS_FACTURE:
+            raise ValueError(f"statut doit être l'un de : {', '.join(STATUTS_FACTURE)}")
+        return valeur
+
+
+class FactureSortie(BaseModel):
+    id: int
+    numero: str
+    client_id: int | None = None
+    client_nom_libre: str | None = None
+    devis_id: int | None = None
+    vente_id: int | None = None
+    statut: str
+    notes: str | None = None
+    lignes: list[LigneFactureSortie]
+    paiements: list[FacturePaiementSortie]
+    montant_total: Decimal
+    montant_paye: Decimal
+    montant_du: Decimal
+    cree_le: datetime
+    modifie_le: datetime
+
+    class Config:
+        from_attributes = True
