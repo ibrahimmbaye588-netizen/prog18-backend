@@ -178,6 +178,8 @@ class Facture(Base):
     vente_id = Column(Integer, ForeignKey("ventes.id"), nullable=True)
     statut = Column(String, nullable=False, default="brouillon")  # brouillon | emise | annulee
     notes = Column(Text, nullable=True)
+    # Référence du bon de commande client (affichée "V/BON CMDE" sur le modèle Lydie-POS)
+    bon_commande = Column(String, nullable=True)
     cree_le = Column(DateTime(timezone=True), server_default=func.now())
     modifie_le = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -199,9 +201,16 @@ class LigneFacture(Base):
     id = Column(Integer, primary_key=True, index=True)
     facture_id = Column(Integer, ForeignKey("factures.id"), nullable=False, index=True)
     article_id = Column(Integer, ForeignKey("articles.id"), nullable=True)
+    code_article = Column(String, nullable=True)
     designation = Column(String, nullable=False)
     quantite = Column(Integer, nullable=False, default=1)
     prix_unitaire = Column(Numeric(10, 2), nullable=False, default=0)
+    # Prix conseillé (indicatif, avant remise) — affiché "PRIX CONSEILLE" sur le modèle Lydie-POS
+    prix_conseille = Column(Numeric(10, 2), nullable=True)
+    # Taux de TVA en % (18 = 18%)
+    taux_tva = Column(Numeric(5, 2), nullable=False, default=18, server_default="18")
+    # Remise en montant (FCFA), appliquée sur le total HT de la ligne
+    remise = Column(Numeric(10, 2), nullable=False, default=0, server_default="0")
 
     facture = relationship("Facture", back_populates="lignes")
 
