@@ -47,6 +47,8 @@ from app.schemas import (
     FactureEntree,
     FactureMiseAJour,
     FactureSortie,
+    LigneFactureEntree,
+    LigneFactureSortie,
     FacturePaiementEntree,
     FacturePaiementSortie,
     TableauDeBordResume,
@@ -731,9 +733,41 @@ def _obtenir_vente_ou_404(vente_id: int, db: Session, utilisateur_courant: Utili
     return vente
 
 
+def _ligne_facture_vers_sortie(ligne: LigneFacture) -> LigneFactureSortie:
+    total_ht = Decimal(ligne.quantite) * Decimal(ligne.prix_unitaire)
+    remise = Decimal(ligne.remise or 0)
+    net_ht = total_ht - remise
+    taux_tva = Decimal(ligne.taux_tva if ligne.taux_tva is not None else 18)
+    montant_tva = net_ht * taux_tva / Decimal(100)
+    total_ttc = net_ht + montant_tva
+    return LigneFactureSortie(
+        id=ligne.id,
+        article_id=ligne.article_id,
+        code_article=ligne.code_article,
+        designation=ligne.designation,
+        quantite=ligne.quantite,
+        prix_unitaire=ligne.prix_unitaire,
+        prix_conseille=ligne.prix_conseille,
+        taux_tva=taux_tva,
+        remise=remise,
+        total_ht=round(total_ht, 2),
+        net_ht=round(net_ht, 2),
+        montant_tva=round(montant_tva, 2),
+        total_ttc=round(total_ttc, 2),
+    )
+
+
 def _facture_vers_sortie(facture: Facture) -> FactureSortie:
-    montant_total = sum(float(l.quantite) * float(l.prix_unitaire) for l in facture.lignes)
-    montant_paye = sum(float(p.montant) for p in facture.paiements)
+    lignes_sortie = [_ligne_facture_vers_sortie(l) for l in facture.lignes]
+
+    total_ht = sum((l.total_ht for l in lignes_sortie), Decimal("0"))
+    remise_totale = sum((l.remise for l in lignes_sortie), Decimal("0"))
+    total_net_ht = sum((l.net_ht for l in lignes_sortie), Decimal("0"))
+    montant_tva = sum((l.montant_tva for l in lignes_sortie), Decimal("0"))
+    net_a_payer = sum((l.total_ttc for l in lignes_sortie), Decimal("0"))
+
+    montant_paye = sum((Decimal(p.montant) for p in facture.paiements), Decimal("0"))
+
     return FactureSortie(
         id=facture.id,
         numero=facture.numero,
@@ -743,11 +777,16 @@ def _facture_vers_sortie(facture: Facture) -> FactureSortie:
         vente_id=facture.vente_id,
         statut=facture.statut,
         notes=facture.notes,
-        lignes=[LigneFactureSortie.model_validate(l) for l in facture.lignes],
+        bon_commande=facture.bon_commande,
+        lignes=lignes_sortie,
         paiements=[FacturePaiementSortie.model_validate(p) for p in facture.paiements],
-        montant_total=round(montant_total, 2),
+        total_ht=round(total_ht, 2),
+        remise_totale=round(remise_totale, 2),
+        total_net_ht=round(total_net_ht, 2),
+        montant_tva=round(montant_tva, 2),
+        montant_total=round(net_a_payer, 2),
         montant_paye=round(montant_paye, 2),
-        montant_du=round(montant_total - montant_paye, 2),
+        montant_du=round(net_a_payer - montant_paye, 2),
         cree_le=facture.cree_le,
         modifie_le=facture.modifie_le,
     )
@@ -826,6 +865,7 @@ def creer_facture(
         vente_id=donnees.vente_id,
         statut=donnees.statut,
         notes=donnees.notes,
+        bon_commande=donnees.bon_commande,
     )
     for ligne in lignes_entree:
         facture.lignes.append(LigneFacture(**ligne.model_dump()))
