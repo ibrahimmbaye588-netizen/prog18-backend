@@ -311,17 +311,30 @@ STATUTS_FACTURE = ("brouillon", "emise", "annulee")
 
 class LigneFactureEntree(BaseModel):
     article_id: int | None = None
+    code_article: str | None = None
     designation: str
     quantite: int = 1
     prix_unitaire: Decimal = Decimal("0")
+    prix_conseille: Decimal | None = None
+    taux_tva: Decimal = Decimal("18")
+    remise: Decimal = Decimal("0")
 
 
 class LigneFactureSortie(BaseModel):
     id: int
     article_id: int | None = None
+    code_article: str | None = None
     designation: str
     quantite: int
     prix_unitaire: Decimal
+    prix_conseille: Decimal | None = None
+    taux_tva: Decimal
+    remise: Decimal
+    # --- Champs calculés (non stockés, dérivés des champs ci-dessus) ---
+    total_ht: Decimal
+    net_ht: Decimal
+    montant_tva: Decimal
+    total_ttc: Decimal
 
     class Config:
         from_attributes = True
@@ -363,6 +376,7 @@ class FactureEntree(BaseModel):
     vente_id: int | None = None
     statut: str = "brouillon"
     notes: str | None = None
+    bon_commande: str | None = None
     # Si vide et devis_id ou vente_id est fourni, les lignes sont copiées automatiquement.
     lignes: list[LigneFactureEntree] = []
 
@@ -379,6 +393,7 @@ class FactureMiseAJour(BaseModel):
     client_nom_libre: str | None = None
     statut: str | None = None
     notes: str | None = None
+    bon_commande: str | None = None
     lignes: list[LigneFactureEntree] | None = None
 
     @field_validator("statut")
@@ -398,8 +413,16 @@ class FactureSortie(BaseModel):
     vente_id: int | None = None
     statut: str
     notes: str | None = None
+    bon_commande: str | None = None
     lignes: list[LigneFactureSortie]
     paiements: list[FacturePaiementSortie]
+    # --- Synthèse (calculée) ---
+    total_ht: Decimal
+    remise_totale: Decimal
+    total_net_ht: Decimal
+    montant_tva: Decimal
+    # montant_total = net à payer (TTC, après remise) — conservé sous ce nom pour
+    # ne pas casser l'affichage existant (liste des factures, badges de statut).
     montant_total: Decimal
     montant_paye: Decimal
     montant_du: Decimal
