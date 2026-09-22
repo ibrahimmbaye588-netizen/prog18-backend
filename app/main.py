@@ -18,6 +18,9 @@ from app.models import (
     Paiement,
     Vente,
     LigneVente,
+    Facture,
+    LigneFacture,
+    PaiementFacture,
 )
 from app.schemas import (
     InscriptionEntree,
@@ -41,6 +44,11 @@ from app.schemas import (
     PaiementSortie,
     VenteEntree,
     VenteSortie,
+    FactureEntree,
+    FactureMiseAJour,
+    FactureSortie,
+    FacturePaiementEntree,
+    FacturePaiementSortie,
     TableauDeBordResume,
     ArticleAlerte,
 )
@@ -688,6 +696,220 @@ def obtenir_vente(
     if not vente:
         raise HTTPException(status_code=404, detail="Vente introuvable")
     return vente
+
+
+# --- Factures ---------------------------------------------------------------
+
+def _generer_numero_facture(db: Session, utilisateur_courant: Utilisateur) -> str:
+    """Numéro séquentiel par entreprise et par année : FAC-2026-0001, ...
+
+    Best-effort (pas de verrou dédié) : suffisant pour ce volume de facturation ;
+    une collision improbable serait de toute façon rejetée par la contrainte
+    d'unicité posée par la migration.
+    """
+    annee = datetime.now(timezone.utc).year
+    prefixe = f"FAC-{annee}-"
+    derniere = (
+        db.query(Facture)
+        .filter(Facture.utilisateur_id == utilisateur_courant.id, Facture.numero.like(f"{prefixe}%"))
+        .order_by(Facture.numero.desc())
+        .first()
+    )
+    dernier_sequence = 0
+    if derniere:
+        try:
+            dernier_sequence = int(derniere.numero.rsplit("-", 1)[-1])
+        except ValueError:
+            dernier_sequence = 0
+    return f"{prefixe}{dernier_sequence + 1:04d}"
+
+
+def _obtenir_vente_ou_404(vente_id: int, db: Session, utilisateur_courant: Utilisateur) -> Vente:
+    vente = _requete_ventes(db, utilisateur_courant).filter(Vente.id == vente_id).first()
+    if not vente:
+        raise HTTPException(status_code=404, detail="Vente introuvable")
+    return vente
+
+
+def _facture_vers_sortie(facture: Facture) -> FactureSortie:
+    montant_total = sum(float(l.quantite) * float(l.prix_unitaire) for l in facture.lignes)
+    montant_paye = sum(float(p.montant) for p in facture.paiements)
+    return FactureSortie(
+        id=facture.id,
+        numero=facture.numero,
+        client_id=facture.client_id,
+        client_nom_libre=facture.client_nom_libre,
+        devis_id=facture.devis_id,
+        vente_id=facture.vente_id,
+        statut=facture.statut,
+        notes=facture.notes,
+        lignes=[LigneFactureSortie.model_validate(l) for l in facture.lignes],
+        paiements=[FacturePaiementSortie.model_validate(p) for p in facture.paiements],
+        montant_total=round(montant_total, 2),
+        montant_paye=round(montant_paye, 2),
+        montant_du=round(montant_total - montant_paye, 2),
+        cree_le=facture.cree_le,
+        modifie_le=facture.modifie_le,
+    )
+
+
+def _requete_factures(db: Session, utilisateur_courant: Utilisateur):
+    return (
+        db.query(Facture)
+        .options(joinedload(Facture.lignes), joinedload(Facture.paiements))
+        .filter(Facture.utilisateur_id == utilisateur_courant.id)
+    )
+
+
+@app.get("/factures", response_model=list[FactureSortie])
+def lister_factures(
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    factures = _requete_factures(db, utilisateur_courant).order_by(Facture.cree_le.desc()).all()
+    return [_facture_vers_sortie(f) for f in factures]
+
+
+@app.post("/factures", response_model=FactureSortie, status_code=status.HTTP_201_CREATED)
+def creer_facture(
+    donnees: FactureEntree,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    client_nom_libre = donnees.client_nom_libre
+    lignes_entree = list(donnees.lignes)
+
+    if donnees.client_id:
+        _obtenir_client_ou_404(donnees.client_id, db, utilisateur_courant)
+
+    devis_source = None
+    if donnees.devis_id:
+        devis_source = _obtenir_devis_ou_404(donnees.devis_id, db, utilisateur_courant)
+        if not lignes_entree:
+            lignes_entree = [
+                LigneFactureEntree(
+                    article_id=l.article_id,
+                    designation=l.designation,
+                    quantite=l.quantite,
+                    prix_unitaire=l.prix_unitaire,
+                )
+                for l in devis_source.lignes
+            ]
+        if not client_nom_libre:
+            client_nom_libre = devis_source.client_nom
+
+    vente_source = None
+    if donnees.vente_id:
+        vente_source = _obtenir_vente_ou_404(donnees.vente_id, db, utilisateur_courant)
+        if not lignes_entree:
+            lignes_entree = [
+                LigneFactureEntree(
+                    article_id=l.article_id,
+                    designation=l.designation,
+                    quantite=l.quantite,
+                    prix_unitaire=l.prix_unitaire,
+                )
+                for l in vente_source.lignes
+            ]
+        if not client_nom_libre and not donnees.client_id:
+            client_nom_libre = vente_source.client_nom_libre
+
+    if not lignes_entree:
+        raise HTTPException(status_code=400, detail="La facture doit contenir au moins une ligne")
+
+    facture = Facture(
+        utilisateur_id=utilisateur_courant.id,
+        numero=_generer_numero_facture(db, utilisateur_courant),
+        client_id=donnees.client_id or (vente_source.client_id if vente_source else None),
+        client_nom_libre=client_nom_libre,
+        devis_id=donnees.devis_id,
+        vente_id=donnees.vente_id,
+        statut=donnees.statut,
+        notes=donnees.notes,
+    )
+    for ligne in lignes_entree:
+        facture.lignes.append(LigneFacture(**ligne.model_dump()))
+
+    db.add(facture)
+    db.commit()
+    db.refresh(facture)
+    return _facture_vers_sortie(facture)
+
+
+def _obtenir_facture_ou_404(facture_id: int, db: Session, utilisateur_courant: Utilisateur) -> Facture:
+    facture = _requete_factures(db, utilisateur_courant).filter(Facture.id == facture_id).first()
+    if not facture:
+        raise HTTPException(status_code=404, detail="Facture introuvable")
+    return facture
+
+
+@app.get("/factures/{facture_id}", response_model=FactureSortie)
+def obtenir_facture(
+    facture_id: int,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    return _facture_vers_sortie(_obtenir_facture_ou_404(facture_id, db, utilisateur_courant))
+
+
+@app.put("/factures/{facture_id}", response_model=FactureSortie)
+def modifier_facture(
+    facture_id: int,
+    donnees: FactureMiseAJour,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    facture = _obtenir_facture_ou_404(facture_id, db, utilisateur_courant)
+    champs = donnees.model_dump(exclude_unset=True, exclude={"lignes"})
+    if "client_id" in champs and champs["client_id"]:
+        _obtenir_client_ou_404(champs["client_id"], db, utilisateur_courant)
+    for champ, valeur in champs.items():
+        setattr(facture, champ, valeur)
+    if donnees.lignes is not None:
+        facture.lignes.clear()
+        for ligne in donnees.lignes:
+            facture.lignes.append(LigneFacture(**ligne.model_dump()))
+
+    db.commit()
+    db.refresh(facture)
+    return _facture_vers_sortie(facture)
+
+
+@app.delete("/factures/{facture_id}", status_code=status.HTTP_204_NO_CONTENT)
+def supprimer_facture(
+    facture_id: int,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    facture = _obtenir_facture_ou_404(facture_id, db, utilisateur_courant)
+    db.delete(facture)
+    db.commit()
+    return None
+
+
+@app.post(
+    "/factures/{facture_id}/paiements",
+    response_model=FacturePaiementSortie,
+    status_code=status.HTTP_201_CREATED,
+)
+def enregistrer_paiement_facture(
+    facture_id: int,
+    donnees: FacturePaiementEntree,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(obtenir_utilisateur_courant),
+):
+    facture = _obtenir_facture_ou_404(facture_id, db, utilisateur_courant)
+    paiement = PaiementFacture(
+        utilisateur_id=utilisateur_courant.id,
+        facture_id=facture.id,
+        montant=donnees.montant,
+        moyen_paiement=donnees.moyen_paiement,
+        motif=donnees.motif,
+    )
+    db.add(paiement)
+    db.commit()
+    db.refresh(paiement)
+    return paiement
 
 
 # --- Tableau de bord ---------------------------------------------------------
