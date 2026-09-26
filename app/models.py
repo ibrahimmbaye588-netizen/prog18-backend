@@ -13,6 +13,7 @@ class Utilisateur(Base):
     mot_de_passe_hash = Column(String, nullable=False)
     nom_entreprise = Column(String, nullable=True)
     cree_le = Column(DateTime(timezone=True), server_default=func.now())
+    derniere_connexion = Column(DateTime(timezone=True), nullable=True)
 
     articles = relationship("Article", back_populates="proprietaire", cascade="all, delete-orphan")
     devis = relationship("Devis", back_populates="proprietaire", cascade="all, delete-orphan")
