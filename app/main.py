@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import requests
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 
@@ -53,6 +53,7 @@ from app.schemas import (
     FacturePaiementSortie,
     TableauDeBordResume,
     ArticleAlerte,
+    AdminEntrepriseSortie,
 )
 from app.auth import (
     hacher_mot_de_passe,
@@ -117,6 +118,9 @@ def connexion(donnees: ConnexionEntree, db: Session = Depends(get_db)):
     utilisateur = db.query(Utilisateur).filter(Utilisateur.email == donnees.email).first()
     if not utilisateur or not verifier_mot_de_passe(donnees.mot_de_passe, utilisateur.mot_de_passe_hash):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+
+    utilisateur.derniere_connexion = datetime.now(timezone.utc)
+    db.commit()
 
     token = creer_token_acces({"sub": utilisateur.email})
     return TokenSortie(access_token=token)
@@ -1004,3 +1008,30 @@ def resume_tableau_de_bord(
         nombre_clients=nombre_clients,
         produits_presque_epuises=produits_presque_epuises[:5],
     )
+
+
+# --- Admin (accès réservé, mot de passe séparé) -----------------------------
+#
+# Indépendant du compte utilisateur normal : protégé par un mot de passe
+# distinct (variable d'environnement ADMIN_PASSWORD sur Render), pas par un
+# jeton JWT. Sert uniquement à lister les entreprises inscrites sur prog18.
+
+def _verifier_mot_de_passe_admin(x_admin_password: str | None = Header(default=None)):
+    mot_de_passe_attendu = os.environ.get("ADMIN_PASSWORD")
+    if not mot_de_passe_attendu:
+        raise HTTPException(status_code=503, detail="Accès admin non configuré sur le serveur")
+    if not x_admin_password or x_admin_password != mot_de_passe_attendu:
+        raise HTTPException(status_code=401, detail="Mot de passe admin incorrect")
+
+
+@app.get("/admin/entreprises", response_model=list[AdminEntrepriseSortie])
+def lister_entreprises_admin(
+    db: Session = Depends(get_db),
+    _: None = Depends(_verifier_mot_de_passe_admin),
+):
+    utilisateurs = db.query(Utilisateur).all()
+    utilisateurs.sort(
+        key=lambda u: u.derniere_connexion or u.cree_le,
+        reverse=True,
+    )
+    return utilisateurs
