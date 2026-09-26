@@ -37,6 +37,19 @@ class UtilisateurMiseAJour(BaseModel):
     nom_entreprise: str | None = None
 
 
+# --- Admin (accès réservé, mot de passe séparé) ----------------------------
+
+class AdminEntrepriseSortie(BaseModel):
+    id: int
+    email: EmailStr
+    nom_entreprise: str | None = None
+    cree_le: datetime
+    derniere_connexion: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
 class TokenSortie(BaseModel):
     access_token: str
     token_type: str = "bearer"
